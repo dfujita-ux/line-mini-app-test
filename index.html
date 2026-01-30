@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>予約テスト（LINEミニアプリ）</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background:#fafafa; }
+    .wrap { max-width: 520px; margin: 0 auto; padding: 16px; }
+    .card { background: white; border-radius: 12px; padding: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-top: 12px; }
+    label { display:block; font-size: 12px; opacity:.8; margin-top: 10px; }
+    select, input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #ddd; margin-top: 6px; }
+    button { width: 100%; padding: 12px; border-radius: 12px; border: 0; margin-top: 14px; font-weight: 700; }
+    button.primary { background: #06c755; color: white; }
+    .muted { font-size: 12px; opacity: .7; }
+    .row { display:flex; gap: 8px; }
+    .row > div { flex: 1; }
+    .ok { color: #0a7; font-weight: 700; }
+    .ng { color: #c33; font-weight: 700; }
+    .slot { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 10px; }
+    .slot button { width: auto; padding: 10px 12px; background:#f1f1f1; color:#111; }
+    .slot button.disabled { opacity: .35; }
+    .slot button.selected { outline: 2px solid #06c755; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>予約テスト（LINEミニアプリ）</h2>
+    <div class="muted">まずは「メニュー表示 → 日時選択 → 予約がDBに入る」までを最短で確認します。</div>
+
+    <div class="card">
+      <div id="status">起動中…</div>
+      <div class="muted" id="debug"></div>
+    </div>
+
+    <div class="card">
+      <label>メニュー</label>
+      <select id="menuSelect"></select>
+
+      <div class="row">
+        <div>
+          <label>日付</label>
+          <input id="dateInput" type="date" />
+        </div>
+        <div>
+          <label>開始時間（候補）</label>
+          <div class="slot" id="slotWrap"></div>
+        </div>
+      </div>
+
+      <label>お名前</label>
+      <input id="nameInput" placeholder="例：山田 太郎" />
+
+      <label>電話（任意）</label>
+      <input id="phoneInput" placeholder="例：090-xxxx-xxxx" />
+
+      <button class="primary" id="bookBtn">予約する</button>
+      <div class="muted" id="result"></div>
+    </div>
+  </div>
+
+  <!-- LIFF SDK -->
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+
+  <!-- Supabase SDK -->
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+    // ★★★ ここ3つを置き換える ★★★
+    const SUPABASE_URL = "https://mjynqvyamgfwbizfsllz.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_0wWureG7eldCeauKq4ro3A_aNRRPaw4";
+    const LIFF_ID = "2009010391";
+
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const elStatus = document.getElementById("status");
+    const elDebug = document.getElementById("debug");
+    const elMenu = document.getElementById("menuSelect");
+    const elDate = document.getElementById("dateInput");
+    const elSlots = document.getElementById("slotWrap");
+    const elName = document.getElementById("nameInput");
+    const elPhone = document.getElementById("phoneInput");
+    const elBtn = document.getElementById("bookBtn");
+    const elResult = document.getElementById("result");
+
+    let lineUserId = "browser-test-user";
+    let selectedSlot = null; // "HH:MM"
+
+    function pad2(n){ return String(n).padStart(2,"0"); }
+
+    function todayJST(){
+      const now = new Date();
+      // JST表示用（厳密じゃなくてOKなテスト用途）
+      const y = now.getFullYear();
+      const m = pad2(now.getMonth()+1);
+      const d = pad2(now.getDate());
+      return `${y}-${m}-${d}`;
+    }
+
+    function makeSlots() {
+      // 10:00〜18:00を30分刻み（テスト用）
+      const slots = [];
+      for (let h=10; h<=17; h++){
+        slots.push(`${pad2(h)}:00`);
+        slots.push(`${pad2(h)}:30`);
+      }
+      slots.push("18:00");
+      return slots;
+    }
+
+    function toISO(dateStr, timeStr){
+      // dateStr: "YYYY-MM-DD", timeStr: "HH:MM"
+      // JSTとして扱う簡易変換（テスト用）
+      return new Date(`${dateStr}T${timeStr}:00+09:00`).toISOString();
+    }
+
+    function addMinutes(iso, min){
+      const d = new Date(iso);
+      d.setMinutes(d.getMinutes()+min);
+      return d.toISOString();
+    }
+
+    function setStatus(ok, msg){
+      elStatus.innerHTML = ok ? `<span class="ok">OK</span> ${msg}` : `<span class="ng">NG</span> ${msg}`;
+    }
+
+    async function initLIFF(){
+      // LINEの中ならLIFFでユーザー取得。外部ブラウザならテストIDのまま。
+      try{
+        if (window.liff && liff.isInClient()){
+          await liff.init({ liffId: LIFF_ID });
+          if (!liff.isLoggedIn()){
+            liff.login();
+            return;
+          }
+          const profile = await liff.getProfile();
+          lineUserId = profile.userId;
+        }
+      } catch(e){
+        // LIFF失敗してもブラウザテストは続行
+        console.warn(e);
+      }
+    }
+
+    async function loadMenus(){
+      const { data, error } = await supabase
+        .from("menus")
+        .select("id,title,duration_min,price_yen,is_active")
+        .eq("is_active", true)
+        .order("created_at", { ascending: true });
+
+      if (error) throw error;
+      elMenu.innerHTML = "";
+      data.forEach(m=>{
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = `${m.title}（${m.duration_min}分${m.price_yen? " / ¥"+m.price_yen.toLocaleString():""}）`;
+        opt.dataset.duration = String(m.duration_min);
+        elMenu.appendChild(opt);
+      });
+    }
+
+    async function loadBookedSlotsForDate(dateStr){
+      // その日の既存予約を取って、重なりをざっくり判定
+      const startISO = new Date(`${dateStr}T00:00:00+09:00`).toISOString();
+      const endISO   = new Date(`${dateStr}T23:59:59+09:00`).toISOString();
+
+      const { data, error } = await supabase
+        .from("bookings")
+        .select("start_at,end_at")
+        .gte("start_at", startISO)
+        .lte("start_at", endISO);
+
+      if (error) throw error;
+      return data ?? [];
+    }
+
+    function renderSlots(bookings, durationMin){
+      selectedSlot = null;
+      elSlots.innerHTML = "";
+
+      const all = makeSlots();
+
+      // 予約が重なるか判定（テスト用の簡易）
+      function overlaps(candidateStartISO){
+        const candidateEndISO = addMinutes(candidateStartISO, durationMin);
+        const cs = new Date(candidateStartISO).getTime();
+        const ce = new Date(candidateEndISO).getTime();
+
+        return bookings.some(b=>{
+          const bs = new Date(b.start_at).getTime();
+          const be = new Date(b.end_at).getTime();
+          return cs < be && ce > bs; // 重なってたらtrue
+        });
+      }
+
+      all.forEach(t=>{
+        const btn = document.createElement("button");
+        btn.textContent = t;
+
+        const dateStr = elDate.value;
+        const startISO = toISO(dateStr, t);
+
+        const disabled = overlaps(startISO);
+        if (disabled){
+          btn.classList.add("disabled");
+          btn.disabled = true;
+        }
+
+        btn.addEventListener("click", ()=>{
+          // 選択状態の見た目
+          [...elSlots.querySelectorAll("button")].forEach(b=>b.classList.remove("selected"));
+          btn.classList.add("selected");
+          selectedSlot = t;
+        });
+
+        elSlots.appendChild(btn);
+      });
+    }
+
+    async function refreshSlots(){
+      const dateStr = elDate.value;
+      const durationMin = Number(elMenu.selectedOptions[0].dataset.duration || "60");
+      const bookings = await loadBookedSlotsForDate(dateStr);
+      renderSlots(bookings, durationMin);
+    }
+
+    async function createBooking(){
+      elResult.textContent = "";
+
+      const menuId = elMenu.value;
+      const dateStr = elDate.value;
+      const name = elName.value.trim();
+      const phone = elPhone.value.trim();
+
+      if (!menuId) return alert("メニューを選んでください");
+      if (!dateStr) return alert("日付を選んでください");
+      if (!selectedSlot) return alert("開始時間を選んでください");
+      if (!name) return alert("お名前を入力してください");
+
+      const durationMin = Number(elMenu.selectedOptions[0].dataset.duration || "60");
+      const startAt = toISO(dateStr, selectedSlot);
+      const endAt = addMinutes(startAt, durationMin);
+
+      // DBにINSERT
+      const { error } = await supabase.from("bookings").insert([{
+        menu_id: menuId,
+        start_at: startAt,
+        end_at: endAt,
+        customer_name: name,
+        customer_phone: phone || null,
+        line_user_id: lineUserId
+      }]);
+
+      if (error){
+        elResult.textContent = "予約エラー: " + error.message;
+        return;
+      }
+
+      elResult.textContent = "予約OK！DBに保存されました。";
+      await refreshSlots(); // 予約後に枠を更新
+    }
+
+    // 起動処理
+    (async ()=>{
+      try{
+        elDate.value = todayJST();
+
+        await initLIFF();
+        await loadMenus();
+        await refreshSlots();
+
+        setStatus(true, "起動完了（メニュー表示OK）");
+        elDebug.textContent = `lineUserId: ${lineUserId}`;
+
+        elMenu.addEventListener("change", refreshSlots);
+        elDate.addEventListener("change", refreshSlots);
+        elBtn.addEventListener("click", createBooking);
+
+      } catch(e){
+        console.error(e);
+        setStatus(false, "起動失敗");
+        elDebug.textContent = String(e?.message ?? e);
+      }
+    })();
+  </script>
+</body>
+</html>
