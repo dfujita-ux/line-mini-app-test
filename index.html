@@ -3,30 +3,32 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>予約テスト（LINEミニアプリ）</title>
+  <title>予約テスト（LINEミニアプリ / 店単位）</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; background:#fafafa; }
-    .wrap { max-width: 520px; margin: 0 auto; padding: 16px; }
+    .wrap { max-width: 560px; margin: 0 auto; padding: 16px; }
     .card { background: white; border-radius: 12px; padding: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-top: 12px; }
     label { display:block; font-size: 12px; opacity:.8; margin-top: 10px; }
-    select, input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #ddd; margin-top: 6px; }
-    button { width: 100%; padding: 12px; border-radius: 12px; border: 0; margin-top: 14px; font-weight: 700; }
+    select, input { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #ddd; margin-top: 6px; box-sizing: border-box; }
+    button { width: 100%; padding: 12px; border-radius: 12px; border: 0; margin-top: 14px; font-weight: 700; cursor: pointer; }
     button.primary { background: #06c755; color: white; }
-    .muted { font-size: 12px; opacity: .7; }
-    .row { display:flex; gap: 8px; }
+    button.primary:disabled { opacity: .4; cursor: not-allowed; }
+    .muted { font-size: 12px; opacity: .7; margin-top: 6px; white-space: pre-wrap; }
+    .row { display:flex; gap: 8px; align-items: flex-start; }
     .row > div { flex: 1; }
     .ok { color: #0a7; font-weight: 700; }
     .ng { color: #c33; font-weight: 700; }
     .slot { display:flex; flex-wrap:wrap; gap: 8px; margin-top: 10px; }
-    .slot button { width: auto; padding: 10px 12px; background:#f1f1f1; color:#111; }
-    .slot button.disabled { opacity: .35; }
+    .slot button { width: auto; padding: 10px 12px; background:#f1f1f1; color:#111; margin-top: 0; }
+    .slot button.disabled { opacity: .35; cursor: not-allowed; }
     .slot button.selected { outline: 2px solid #06c755; }
+    .warn { color:#b60; font-weight:700; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h2>予約テスト（LINEミニアプリ）</h2>
-    <div class="muted">まずは「メニュー表示 → 日時選択 → 予約がDBに入る」までを最短で確認します。</div>
+    <h2>予約テスト（店単位 / LINEミニアプリ）</h2>
+    <div class="muted">店単位（shop_id）で「メニュー取得・予約取得・予約作成」を絞り込みます。休日（shop_holidays）は予約不可にします。</div>
 
     <div class="card">
       <div id="status">起動中…</div>
@@ -59,31 +61,41 @@
     </div>
   </div>
 
-  <!-- LIFF SDK -->
+  <!-- LIFF SDK（LINE内で userId を取る用） -->
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 
-  <!-- Supabase SDK -->
-  <script type="module">
-    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+  <!-- Supabase SDK（CDN版：module import不要） -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
+  <script>
+    /***********************
+     * ここだけ置き換え必須
+     ***********************/
     // ★★★ ここ3つを置き換える ★★★
     const SUPABASE_URL = "https://mjynqvyamgfwbizfsllz.supabase.co";
     const SUPABASE_ANON_KEY = "sb_publishable_0wWureG7eldCeauKq4ro3A_aNRRPaw4";
     const LIFF_ID = "2009010391";
 
+    /***********************
+     * 店の名前（shops.name）
+     * DBで作った「デモ店舗」に合わせる
+     ***********************/
+    const SHOP_NAME = "デモ店舗";
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const { createClient } = supabase;
+    const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const elStatus = document.getElementById("status");
-    const elDebug = document.getElementById("debug");
-    const elMenu = document.getElementById("menuSelect");
-    const elDate = document.getElementById("dateInput");
-    const elSlots = document.getElementById("slotWrap");
-    const elName = document.getElementById("nameInput");
-    const elPhone = document.getElementById("phoneInput");
-    const elBtn = document.getElementById("bookBtn");
+    const elDebug  = document.getElementById("debug");
+    const elMenu   = document.getElementById("menuSelect");
+    const elDate   = document.getElementById("dateInput");
+    const elSlots  = document.getElementById("slotWrap");
+    const elName   = document.getElementById("nameInput");
+    const elPhone  = document.getElementById("phoneInput");
+    const elBtn    = document.getElementById("bookBtn");
     const elResult = document.getElementById("result");
 
+    let shopId = null;
     let lineUserId = "browser-test-user";
     let selectedSlot = null; // "HH:MM"
 
@@ -91,7 +103,6 @@
 
     function todayJST(){
       const now = new Date();
-      // JST表示用（厳密じゃなくてOKなテスト用途）
       const y = now.getFullYear();
       const m = pad2(now.getMonth()+1);
       const d = pad2(now.getDate());
@@ -110,8 +121,7 @@
     }
 
     function toISO(dateStr, timeStr){
-      // dateStr: "YYYY-MM-DD", timeStr: "HH:MM"
-      // JSTとして扱う簡易変換（テスト用）
+      // JSTとして扱う簡易変換（テスト用途）
       return new Date(`${dateStr}T${timeStr}:00+09:00`).toISOString();
     }
 
@@ -125,52 +135,113 @@
       elStatus.innerHTML = ok ? `<span class="ok">OK</span> ${msg}` : `<span class="ng">NG</span> ${msg}`;
     }
 
+    function debugLine(msg){
+      elDebug.textContent = elDebug.textContent ? (elDebug.textContent + "\n" + msg) : msg;
+    }
+
     async function initLIFF(){
       // LINEの中ならLIFFでユーザー取得。外部ブラウザならテストIDのまま。
       try{
-        if (window.liff && liff.isInClient()){
+        if (window.liff) {
+          // isInClient が false（外部ブラウザ）でも init は動く場合があるのでtry
           await liff.init({ liffId: LIFF_ID });
-          if (!liff.isLoggedIn()){
-            liff.login();
-            return;
+
+          if (liff.isInClient()){
+            if (!liff.isLoggedIn()){
+              liff.login();
+              return;
+            }
+            const profile = await liff.getProfile();
+            lineUserId = profile.userId;
           }
-          const profile = await liff.getProfile();
-          lineUserId = profile.userId;
         }
       } catch(e){
         // LIFF失敗してもブラウザテストは続行
-        console.warn(e);
+        console.warn("LIFF init failed:", e);
+        debugLine("LIFF: failed (browser mode)");
       }
     }
 
+    /***********************
+     * 店IDを取得（shops.name で検索）
+     ***********************/
+    async function loadShopId(){
+      const { data, error } = await sb
+        .from("shops")
+        .select("id,name")
+        .eq("name", SHOP_NAME)
+        .single();
+
+      if (error) throw error;
+      shopId = data.id;
+      debugLine(`SHOP_NAME: ${SHOP_NAME}`);
+      debugLine(`shopId: ${shopId}`);
+    }
+
+    /***********************
+     * 店休日チェック（shop_holidays）
+     * 休日なら reason を返す / 休日でなければ null
+     ***********************/
+    async function getHolidayReason(dateStr){
+      const { data, error } = await sb
+        .from("shop_holidays")
+        .select("reason")
+        .eq("shop_id", shopId)
+        .eq("holiday", dateStr)
+        .maybeSingle();
+
+      if (error) throw error;
+      return data ? (data.reason || "休日") : null;
+    }
+
+    /***********************
+     * メニュー読込（店で絞る）
+     ***********************/
     async function loadMenus(){
-      const { data, error } = await supabase
+      const { data, error } = await sb
         .from("menus")
-        .select("id,title,duration_min,price_yen,is_active")
+        .select("id,title,duration_min,price_yen,is_active,shop_id")
         .eq("is_active", true)
+        .eq("shop_id", shopId)
         .order("created_at", { ascending: true });
 
       if (error) throw error;
+
       elMenu.innerHTML = "";
+
+      if (!data || data.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "メニューがありません（menusを確認してください）";
+        elMenu.appendChild(opt);
+        return;
+      }
+
       data.forEach(m=>{
         const opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = `${m.title}（${m.duration_min}分${m.price_yen? " / ¥"+m.price_yen.toLocaleString():""}）`;
+        opt.textContent = `${m.title}（${m.duration_min}分${m.price_yen? " / ¥"+Number(m.price_yen).toLocaleString():""}）`;
         opt.dataset.duration = String(m.duration_min);
         elMenu.appendChild(opt);
       });
     }
 
-    async function loadBookedSlotsForDate(dateStr){
-      // その日の既存予約を取って、重なりをざっくり判定
+    /***********************
+     * その日の予約を取得（店で絞る）
+     ***********************/
+    async function loadBookingsForDate(dateStr){
+      // JSTの日付で 00:00〜翌日00:00 の範囲
       const startISO = new Date(`${dateStr}T00:00:00+09:00`).toISOString();
-      const endISO   = new Date(`${dateStr}T23:59:59+09:00`).toISOString();
+      const nextDay = new Date(`${dateStr}T00:00:00+09:00`);
+      nextDay.setDate(nextDay.getDate() + 1);
+      const endISO = nextDay.toISOString();
 
-      const { data, error } = await supabase
+      const { data, error } = await sb
         .from("bookings")
         .select("start_at,end_at")
+        .eq("shop_id", shopId)
         .gte("start_at", startISO)
-        .lte("start_at", endISO);
+        .lt("start_at", endISO);
 
       if (error) throw error;
       return data ?? [];
@@ -182,7 +253,6 @@
 
       const all = makeSlots();
 
-      // 予約が重なるか判定（テスト用の簡易）
       function overlaps(candidateStartISO){
         const candidateEndISO = addMinutes(candidateStartISO, durationMin);
         const cs = new Date(candidateStartISO).getTime();
@@ -209,7 +279,6 @@
         }
 
         btn.addEventListener("click", ()=>{
-          // 選択状態の見た目
           [...elSlots.querySelectorAll("button")].forEach(b=>b.classList.remove("selected"));
           btn.classList.add("selected");
           selectedSlot = t;
@@ -220,9 +289,26 @@
     }
 
     async function refreshSlots(){
+      elResult.textContent = "";
+      elBtn.disabled = false;
+
+      if (!shopId) return;
+
       const dateStr = elDate.value;
-      const durationMin = Number(elMenu.selectedOptions[0].dataset.duration || "60");
-      const bookings = await loadBookedSlotsForDate(dateStr);
+      const menuOpt = elMenu.selectedOptions[0];
+      const durationMin = Number(menuOpt?.dataset?.duration || "60");
+
+      // 休日ならブロック
+      const reason = await getHolidayReason(dateStr);
+      if (reason) {
+        elSlots.innerHTML = "";
+        elBtn.disabled = true;
+        elResult.innerHTML = `<span class="warn">この日は予約できません：</span>${reason}`;
+        return;
+      }
+
+      // 予約枠を取得して表示
+      const bookings = await loadBookingsForDate(dateStr);
       renderSlots(bookings, durationMin);
     }
 
@@ -234,17 +320,25 @@
       const name = elName.value.trim();
       const phone = elPhone.value.trim();
 
+      if (!shopId) return alert("shopIdが未取得です（shopsを確認してください）");
       if (!menuId) return alert("メニューを選んでください");
       if (!dateStr) return alert("日付を選んでください");
       if (!selectedSlot) return alert("開始時間を選んでください");
       if (!name) return alert("お名前を入力してください");
 
+      // 念のため、予約直前にも休日チェック
+      const reason = await getHolidayReason(dateStr);
+      if (reason) {
+        elResult.innerHTML = `<span class="warn">この日は予約できません：</span>${reason}`;
+        return;
+      }
+
       const durationMin = Number(elMenu.selectedOptions[0].dataset.duration || "60");
       const startAt = toISO(dateStr, selectedSlot);
       const endAt = addMinutes(startAt, durationMin);
 
-      // DBにINSERT
-      const { error } = await supabase.from("bookings").insert([{
+      const { error } = await sb.from("bookings").insert([{
+        shop_id: shopId,
         menu_id: menuId,
         start_at: startAt,
         end_at: endAt,
@@ -254,7 +348,14 @@
       }]);
 
       if (error){
-        elResult.textContent = "予約エラー: " + error.message;
+        const msg = String(error.message || error);
+
+        // 重複予約（DBのEXCLUDE制約）に当たったときの優しい表示
+        if (msg.includes("bookings_no_overlap_shop") || msg.includes("conflict")) {
+          elResult.textContent = "その時間はちょうど埋まりました。別の時間を選んでください。";
+        } else {
+          elResult.textContent = "予約エラー: " + msg;
+        }
         return;
       }
 
@@ -262,17 +363,22 @@
       await refreshSlots(); // 予約後に枠を更新
     }
 
-    // 起動処理
+    /***********************
+     * 起動
+     ***********************/
     (async ()=>{
       try{
         elDate.value = todayJST();
+        debugLine("booting...");
 
         await initLIFF();
+        debugLine(`lineUserId: ${lineUserId}`);
+
+        await loadShopId();
         await loadMenus();
         await refreshSlots();
 
-        setStatus(true, "起動完了（メニュー表示OK）");
-        elDebug.textContent = `lineUserId: ${lineUserId}`;
+        setStatus(true, "起動完了（店単位 / 休日ブロック有）");
 
         elMenu.addEventListener("change", refreshSlots);
         elDate.addEventListener("change", refreshSlots);
@@ -281,7 +387,7 @@
       } catch(e){
         console.error(e);
         setStatus(false, "起動失敗");
-        elDebug.textContent = String(e?.message ?? e);
+        debugLine("ERROR: " + String(e?.message ?? e));
       }
     })();
   </script>
