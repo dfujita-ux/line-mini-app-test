@@ -358,6 +358,13 @@
         }
         return;
       }
+await fetch("/api/notify", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    text: `【予約】\n日付: ${dateStr}\n時間: ${selectedSlot}\nメニュー: ${elMenu.selectedOptions[0].textContent}\n名前: ${name}\n電話: ${phone || "-"}`
+  }),
+});
 
       elResult.textContent = "予約OK！DBに保存されました。";
       await refreshSlots(); // 予約後に枠を更新
@@ -393,3 +400,4 @@
   </script>
 </body>
 </html>
+
